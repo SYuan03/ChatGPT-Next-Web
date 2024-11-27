@@ -1,5 +1,12 @@
 {
-    "github": {
-        "silent": true
+  "github": {
+    "silent": true
+  },
+  "routes": [
+    {
+      "src": "/v1/(.*)",
+      "dest": "http://142.171.55.117:3000/v1/:path*",
+      "methods": ["GET", "POST", "PUT", "DELETE"]
     }
+  ]
 }
