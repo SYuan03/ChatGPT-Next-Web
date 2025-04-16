@@ -1,4 +1,4 @@
-import { ApiPath, Google, REQUEST_TIMEOUT_MS } from "@/app/constant";
+import { ApiPath, Google } from "@/app/constant";
 import {
   ChatOptions,
   getHeaders,
@@ -22,6 +22,7 @@ import {
   getMessageTextContent,
   getMessageImages,
   isVisionModel,
+  getTimeoutMSByModel,
 } from "@/app/utils";
 import { preProcessImageContent } from "@/app/utils/chat";
 import { nanoid } from "nanoid";
@@ -60,9 +61,25 @@ export class GeminiProApi implements LLMApi {
   extractMessage(res: any) {
     console.log("[Response] gemini-pro response: ", res);
 
+    const getTextFromParts = (parts: any[]) => {
+      if (!Array.isArray(parts)) return "";
+
+      return parts
+        .map((part) => part?.text || "")
+        .filter((text) => text.trim() !== "")
+        .join("\n\n");
+    };
+
+    let content = "";
+    if (Array.isArray(res)) {
+      res.map((item) => {
+        content += getTextFromParts(item?.candidates?.at(0)?.content?.parts);
+      });
+    }
+
     return (
-      res?.candidates?.at(0)?.content?.parts.at(0)?.text ||
-      res?.at(0)?.candidates?.at(0)?.content?.parts.at(0)?.text ||
+      getTextFromParts(res?.candidates?.at(0)?.content?.parts) ||
+      content || //getTextFromParts(res?.at(0)?.candidates?.at(0)?.content?.parts) ||
       res?.error?.message ||
       ""
     );
@@ -181,10 +198,11 @@ export class GeminiProApi implements LLMApi {
         headers: getHeaders(),
       };
 
+      const isThinking = options.config.model.includes("-thinking");
       // make a fetch request
       const requestTimeoutId = setTimeout(
         () => controller.abort(),
-        REQUEST_TIMEOUT_MS,
+        getTimeoutMSByModel(options.config.model),
       );
 
       if (shouldStream) {
@@ -223,7 +241,10 @@ export class GeminiProApi implements LLMApi {
                 },
               });
             }
-            return chunkJson?.candidates?.at(0)?.content.parts.at(0)?.text;
+            return chunkJson?.candidates
+              ?.at(0)
+              ?.content.parts?.map((part: { text: string }) => part.text)
+              .join("\n\n");
           },
           // processToolMessage, include tool_calls message and tool call results
           (

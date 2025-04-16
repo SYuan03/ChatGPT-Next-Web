@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useMemo, useState, Fragment } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import styles from "./home.module.scss";
 
@@ -9,6 +9,7 @@ import ChatGptIcon from "../icons/chatgpt.svg";
 import AddIcon from "../icons/add.svg";
 import DeleteIcon from "../icons/delete.svg";
 import MaskIcon from "../icons/mask.svg";
+import McpIcon from "../icons/mcp.svg";
 import DragIcon from "../icons/drag.svg";
 import DiscoveryIcon from "../icons/discovery.svg";
 
@@ -22,15 +23,21 @@ import {
   MIN_SIDEBAR_WIDTH,
   NARROW_SIDEBAR_WIDTH,
   Path,
-  PLUGINS,
   REPO_URL,
 } from "../constant";
 
 import { Link, useNavigate } from "react-router-dom";
 import { isIOS, useMobileScreen } from "../utils";
 import dynamic from "next/dynamic";
-import { showConfirm, Selector } from "./ui-lib";
+import { Selector, showConfirm } from "./ui-lib";
 import clsx from "clsx";
+import { isMcpEnabled } from "../mcp/actions";
+
+const DISCOVERY = [
+  { name: Locale.Plugin.Name, path: Path.Plugins },
+  { name: "Stable Diffusion", path: Path.Sd },
+  { name: Locale.SearchChat.Page.Title, path: Path.SearchChat },
+];
 
 const ChatList = dynamic(async () => (await import("./chat-list")).ChatList, {
   loading: () => null,
@@ -128,6 +135,7 @@ export function useDragSideBar() {
     shouldNarrow,
   };
 }
+
 export function SideBarContainer(props: {
   children: React.ReactNode;
   onDragStart: (e: MouseEvent) => void;
@@ -219,10 +227,21 @@ export function SideBarTail(props: {
 export function SideBar(props: { className?: string }) {
   useHotKey();
   const { onDragStart, shouldNarrow } = useDragSideBar();
-  const [showPluginSelector, setShowPluginSelector] = useState(false);
+  const [showDiscoverySelector, setshowDiscoverySelector] = useState(false);
   const navigate = useNavigate();
   const config = useAppConfig();
   const chatStore = useChatStore();
+  const [mcpEnabled, setMcpEnabled] = useState(false);
+
+  useEffect(() => {
+    // 检查 MCP 是否启用
+    const checkMcpStatus = async () => {
+      const enabled = await isMcpEnabled();
+      setMcpEnabled(enabled);
+      console.log("[SideBar] MCP enabled:", enabled);
+    };
+    checkMcpStatus();
+  }, []);
 
   return (
     <SideBarContainer
@@ -250,25 +269,36 @@ export function SideBar(props: { className?: string }) {
             }}
             shadow
           />
+          {mcpEnabled && (
+            <IconButton
+              icon={<McpIcon />}
+              text={shouldNarrow ? undefined : Locale.Mcp.Name}
+              className={styles["sidebar-bar-button"]}
+              onClick={() => {
+                navigate(Path.McpMarket, { state: { fromHome: true } });
+              }}
+              shadow
+            />
+          )}
           <IconButton
             icon={<DiscoveryIcon />}
             text={shouldNarrow ? undefined : Locale.Discovery.Name}
             className={styles["sidebar-bar-button"]}
-            onClick={() => setShowPluginSelector(true)}
+            onClick={() => setshowDiscoverySelector(true)}
             shadow
           />
         </div>
-        {showPluginSelector && (
+        {showDiscoverySelector && (
           <Selector
             items={[
-              ...PLUGINS.map((item) => {
+              ...DISCOVERY.map((item) => {
                 return {
                   title: item.name,
                   value: item.path,
                 };
               }),
             ]}
-            onClose={() => setShowPluginSelector(false)}
+            onClose={() => setshowDiscoverySelector(false)}
             onSelection={(s) => {
               navigate(s[0], { state: { fromHome: true } });
             }}

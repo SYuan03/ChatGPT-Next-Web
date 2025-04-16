@@ -1,4 +1,9 @@
-import { getMessageTextContent, trimTopic } from "../utils";
+import {
+  getMessageTextContent,
+  isDalle3,
+  safeLocalStorage,
+  trimTopic,
+} from "../utils";
 
 import { indexedDBStorage } from "@/app/utils/indexedDB-storage";
 import { nanoid } from "nanoid";
@@ -14,14 +19,16 @@ import {
   DEFAULT_INPUT_TEMPLATE,
   DEFAULT_MODELS,
   DEFAULT_SYSTEM_TEMPLATE,
+  GEMINI_SUMMARIZE_MODEL,
+  DEEPSEEK_SUMMARIZE_MODEL,
   KnowledgeCutOffDate,
+  MCP_SYSTEM_TEMPLATE,
+  MCP_TOOLS_TEMPLATE,
+  ServiceProvider,
   StoreKey,
   SUMMARIZE_MODEL,
-  GEMINI_SUMMARIZE_MODEL,
-  ServiceProvider,
 } from "../constant";
 import Locale, { getLang } from "../locales";
-import { isDalle3, safeLocalStorage } from "../utils";
 import { prettyObject } from "../utils/format";
 import { createPersistStore } from "../utils/store";
 import { estimateTokenLength } from "../utils/token";
@@ -29,6 +36,8 @@ import { ModelConfig, ModelType, useAppConfig } from "./config";
 import { useAccessStore } from "./access";
 import { collectModelsWithDefaultModel } from "../utils/model";
 import { createEmptyMask, Mask } from "./mask";
+import { executeMcpAction, getAllTools, isMcpEnabled } from "../mcp/actions";
+import { extractMcpJson, isMcpJson } from "../mcp/utils";
 
 const localStorage = safeLocalStorage();
 
@@ -53,6 +62,7 @@ export type ChatMessage = RequestMessage & {
   model?: ModelType;
   tools?: ChatMessageTool[];
   audio_url?: string;
+  isMcpResponse?: boolean;
 };
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -134,7 +144,10 @@ function getSummarizeModel(
   }
   if (currentModel.startsWith("gemini")) {
     return [GEMINI_SUMMARIZE_MODEL, ServiceProvider.Google];
+  } else if (currentModel.startsWith("deepseek-")) {
+    return [DEEPSEEK_SUMMARIZE_MODEL, ServiceProvider.DeepSeek];
   }
+
   return [currentModel, providerName];
 }
 
@@ -189,6 +202,27 @@ function fillTemplateWith(input: string, modelConfig: ModelConfig) {
   return output;
 }
 
+async function getMcpSystemPrompt(): Promise<string> {
+  const tools = await getAllTools();
+
+  let toolsStr = "";
+
+  tools.forEach((i) => {
+    // error client has no tools
+    if (!i.tools) return;
+
+    toolsStr += MCP_TOOLS_TEMPLATE.replace(
+      "{{ clientId }}",
+      i.clientId,
+    ).replace(
+      "{{ tools }}",
+      i.tools.tools.map((p: object) => JSON.stringify(p, null, 2)).join("\n"),
+    );
+  });
+
+  return MCP_SYSTEM_TEMPLATE.replace("{{ MCP_TOOLS }}", toolsStr);
+}
+
 const DEFAULT_CHAT_STATE = {
   sessions: [createEmptySession()],
   currentSessionIndex: 0,
@@ -214,7 +248,11 @@ export const useChatStore = createPersistStore(
         const newSession = createEmptySession();
 
         newSession.topic = currentSession.topic;
-        newSession.messages = [...currentSession.messages];
+        // 深拷贝消息
+        newSession.messages = currentSession.messages.map((msg) => ({
+          ...msg,
+          id: nanoid(), // 生成新的消息 ID
+        }));
         newSession.mask = {
           ...currentSession.mask,
           modelConfig: {
@@ -358,24 +396,30 @@ export const useChatStore = createPersistStore(
           session.messages = session.messages.concat();
           session.lastUpdate = Date.now();
         });
+
         get().updateStat(message, targetSession);
+
+        get().checkMcpJson(message);
+
         get().summarizeSession(false, targetSession);
       },
 
-      async onUserInput(content: string, attachImages?: string[]) {
+      async onUserInput(
+        content: string,
+        attachImages?: string[],
+        isMcpResponse?: boolean,
+      ) {
         const session = get().currentSession();
         const modelConfig = session.mask.modelConfig;
 
-        const userContent = fillTemplateWith(content, modelConfig);
-        console.log("[User Input] after template: ", userContent);
+        // MCP Response no need to fill template
+        let mContent: string | MultimodalContent[] = isMcpResponse
+          ? content
+          : fillTemplateWith(content, modelConfig);
 
-        let mContent: string | MultimodalContent[] = userContent;
-
-        if (attachImages && attachImages.length > 0) {
+        if (!isMcpResponse && attachImages && attachImages.length > 0) {
           mContent = [
-            ...(userContent
-              ? [{ type: "text" as const, text: userContent }]
-              : []),
+            ...(content ? [{ type: "text" as const, text: content }] : []),
             ...attachImages.map((url) => ({
               type: "image_url" as const,
               image_url: { url },
@@ -386,6 +430,7 @@ export const useChatStore = createPersistStore(
         let userMessage: ChatMessage = createMessage({
           role: "user",
           content: mContent,
+          isMcpResponse,
         });
 
         const botMessage: ChatMessage = createMessage({
@@ -395,7 +440,7 @@ export const useChatStore = createPersistStore(
         });
 
         // get recent messages
-        const recentMessages = get().getMessagesWithMemory();
+        const recentMessages = await get().getMessagesWithMemory();
         const sendMessages = recentMessages.concat(userMessage);
         const messageIndex = session.messages.length + 1;
 
@@ -425,7 +470,7 @@ export const useChatStore = createPersistStore(
               session.messages = session.messages.concat();
             });
           },
-          onFinish(message) {
+          async onFinish(message) {
             botMessage.streaming = false;
             if (message) {
               botMessage.content = message;
@@ -494,7 +539,7 @@ export const useChatStore = createPersistStore(
         }
       },
 
-      getMessagesWithMemory() {
+      async getMessagesWithMemory() {
         const session = get().currentSession();
         const modelConfig = session.mask.modelConfig;
         const clearContextIndex = session.clearContextIndex ?? 0;
@@ -510,19 +555,32 @@ export const useChatStore = createPersistStore(
           (session.mask.modelConfig.model.startsWith("gpt-") ||
             session.mask.modelConfig.model.startsWith("chatgpt-"));
 
+        const mcpEnabled = await isMcpEnabled();
+        const mcpSystemPrompt = mcpEnabled ? await getMcpSystemPrompt() : "";
+
         var systemPrompts: ChatMessage[] = [];
-        systemPrompts = shouldInjectSystemPrompts
-          ? [
-              createMessage({
-                role: "system",
-                content: fillTemplateWith("", {
+
+        if (shouldInjectSystemPrompts) {
+          systemPrompts = [
+            createMessage({
+              role: "system",
+              content:
+                fillTemplateWith("", {
                   ...modelConfig,
                   template: DEFAULT_SYSTEM_TEMPLATE,
-                }),
-              }),
-            ]
-          : [];
-        if (shouldInjectSystemPrompts) {
+                }) + mcpSystemPrompt,
+            }),
+          ];
+        } else if (mcpEnabled) {
+          systemPrompts = [
+            createMessage({
+              role: "system",
+              content: mcpSystemPrompt,
+            }),
+          ];
+        }
+
+        if (shouldInjectSystemPrompts || mcpEnabled) {
           console.log(
             "[Global System Prompt] ",
             systemPrompts.at(0)?.content ?? "empty",
@@ -763,6 +821,38 @@ export const useChatStore = createPersistStore(
         set({
           lastInput,
         });
+      },
+
+      /** check if the message contains MCP JSON and execute the MCP action */
+      checkMcpJson(message: ChatMessage) {
+        const mcpEnabled = isMcpEnabled();
+        if (!mcpEnabled) return;
+        const content = getMessageTextContent(message);
+        if (isMcpJson(content)) {
+          try {
+            const mcpRequest = extractMcpJson(content);
+            if (mcpRequest) {
+              console.debug("[MCP Request]", mcpRequest);
+
+              executeMcpAction(mcpRequest.clientId, mcpRequest.mcp)
+                .then((result) => {
+                  console.log("[MCP Response]", result);
+                  const mcpResponse =
+                    typeof result === "object"
+                      ? JSON.stringify(result)
+                      : String(result);
+                  get().onUserInput(
+                    `\`\`\`json:mcp-response:${mcpRequest.clientId}\n${mcpResponse}\n\`\`\``,
+                    [],
+                    true,
+                  );
+                })
+                .catch((error) => showToast("MCP execution failed", error));
+            }
+          } catch (error) {
+            console.error("[Check MCP JSON]", error);
+          }
+        }
       },
     };
 

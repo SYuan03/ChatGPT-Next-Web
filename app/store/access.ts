@@ -13,8 +13,10 @@ import {
   MOONSHOT_BASE_URL,
   STABILITY_BASE_URL,
   IFLYTEK_BASE_URL,
+  DEEPSEEK_BASE_URL,
   XAI_BASE_URL,
   CHATGLM_BASE_URL,
+  SILICONFLOW_BASE_URL,
 } from "../constant";
 import { getHeaders } from "../client/api";
 import { getClientConfig } from "../config/client";
@@ -47,9 +49,15 @@ const DEFAULT_STABILITY_URL = isApp ? STABILITY_BASE_URL : ApiPath.Stability;
 
 const DEFAULT_IFLYTEK_URL = isApp ? IFLYTEK_BASE_URL : ApiPath.Iflytek;
 
+const DEFAULT_DEEPSEEK_URL = isApp ? DEEPSEEK_BASE_URL : ApiPath.DeepSeek;
+
 const DEFAULT_XAI_URL = isApp ? XAI_BASE_URL : ApiPath.XAI;
 
 const DEFAULT_CHATGLM_URL = isApp ? CHATGLM_BASE_URL : ApiPath.ChatGLM;
+
+const DEFAULT_SILICONFLOW_URL = isApp
+  ? SILICONFLOW_BASE_URL
+  : ApiPath.SiliconFlow;
 
 const DEFAULT_ACCESS_STATE = {
   accessCode: "",
@@ -108,6 +116,10 @@ const DEFAULT_ACCESS_STATE = {
   iflytekApiKey: "",
   iflytekApiSecret: "",
 
+  // deepseek
+  deepseekUrl: DEFAULT_DEEPSEEK_URL,
+  deepseekApiKey: "",
+
   // xai
   xaiUrl: DEFAULT_XAI_URL,
   xaiApiKey: "",
@@ -115,6 +127,10 @@ const DEFAULT_ACCESS_STATE = {
   // chatglm
   chatglmUrl: DEFAULT_CHATGLM_URL,
   chatglmApiKey: "",
+
+  // siliconflow
+  siliconflowUrl: DEFAULT_SILICONFLOW_URL,
+  siliconflowApiKey: "",
 
   // server config
   needCode: true,
@@ -124,6 +140,7 @@ const DEFAULT_ACCESS_STATE = {
   disableFastLink: false,
   customModels: "",
   defaultModel: "",
+  visionModels: "",
 
   // tts config
   edgeTTSVoiceName: "zh-CN-YunxiNeural",
@@ -138,7 +155,10 @@ export const useAccessStore = createPersistStore(
 
       return get().needCode;
     },
-
+    getVisionModels() {
+      this.fetch();
+      return get().visionModels;
+    },
     edgeVoiceName() {
       this.fetch();
 
@@ -183,6 +203,9 @@ export const useAccessStore = createPersistStore(
     isValidIflytek() {
       return ensure(get(), ["iflytekApiKey"]);
     },
+    isValidDeepSeek() {
+      return ensure(get(), ["deepseekApiKey"]);
+    },
 
     isValidXAI() {
       return ensure(get(), ["xaiApiKey"]);
@@ -190,6 +213,10 @@ export const useAccessStore = createPersistStore(
 
     isValidChatGLM() {
       return ensure(get(), ["chatglmApiKey"]);
+    },
+
+    isValidSiliconFlow() {
+      return ensure(get(), ["siliconflowApiKey"]);
     },
 
     isAuthorized() {
@@ -207,8 +234,10 @@ export const useAccessStore = createPersistStore(
         this.isValidTencent() ||
         this.isValidMoonshot() ||
         this.isValidIflytek() ||
+        this.isValidDeepSeek() ||
         this.isValidXAI() ||
         this.isValidChatGLM() ||
+        this.isValidSiliconFlow() ||
         !this.enabledAccessControl() ||
         (this.enabledAccessControl() && ensure(get(), ["accessCode"]))
       );
